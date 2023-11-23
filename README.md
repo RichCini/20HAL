@@ -4,7 +4,7 @@ Additional details are provided on my web site http://cini.classiccmp.org/hal.ht
 
 The code clean-compiles with MASM 6.11 and produces a binary-identical object file but is inauthentic. I've posted a second
 version compiled with Seattle Computer's ASM. There are some syntactical differences, so a lot of editing was required.
-This also produces a binary-identical object file.
+This also produces a binary-identical object file and I feel closer to what the original would have been like.
 
 What is still unknown is the actual blocking/transmission protocol. As noted, the program sends remote commands to a 
 DECSYSTEM-10 to facilitate file transfers between Microsoft and IBM. The two programs that resided on the DECSYSTEM 
