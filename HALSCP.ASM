@@ -61,12 +61,27 @@
 ;	or R (REL relocatable file). I have not yet been able to
 ;	figure out what "DISK" is for.				
 ;
+; 08-Jan-2022
+;	Had a nice discussion with historian Ryan Ottignon about this
+;	and he pointed out a few passages in the book "Gates" which
+;	provides some clues. Developer Bob O'Rear was primarily
+;	responsible for the conversion of SCP code for use with 
+;	the IBM prototype and he described the frequent trips to 
+;	SeaTac to express courier diskettes to IBM in Florida. So,
+;	in my mind, it wouldn't be a stretch to think that he
+;	might have hacked this together to make getting files to
+;	IBM a lot easier.
+;
 ; 21-Nov-2023
 ;	Significant work done to get this to compile properly under
 ;	MASM 6.11 and get the data structure stuff right, but certain
 ;	instructions assemble differently under MASM than ASM. While
 ;	I'd prefer to stick with MASM, ASM would certainly be
-;	period-correct. ASM also doesn't support STRUC, so
+;	period-correct. ASM also doesn't support STRUC.
+;
+;	This version is patched to run at 9600 baud to be compatible
+;	with SIMH (which assumes a raw port speed of 9600). Look for
+;	"PATCH" in the code.
 
 ; references to locations in the PDB. ORGs with labels could work too.
 TMP1:	equ	1	; PDB exit
@@ -84,8 +99,8 @@ progsz:		dw      0                       ;  xref 9663:02B3, 0325, 0751
 data7:		db      0                       ;  xref 9663:0627, 0649, 0790
 cmdcnt: 	dw      0                       ;  xref 9663:0643, 064C, 065A
 		db      0, 0
-; pointer to the end of the "resident" portion as realstart is overwritten
-; during code execution. Not sure why its statically initialized.
+; Pointer to the end of the "resident" portion as realstart is overwritten
+; during code execution to create a disk buffer.
 sysinit:	dw	realstart       ; 74Bh xref 9663:0343 set in sub5
 ; private FCB
 fcbDrive:	db 	0	;drive 
@@ -107,7 +122,7 @@ fcbRandomRecNo:	dw 	0	;RR
 
 ;should be @ 130h
 		db      0
-CurParseChar:	db      0                       ;  xref 9663:046C, 0486, 049D  dw??
+CurParseChar:	db      0                       ;  xref 9663:046C, 0486, 049D
 		db      0
 extmac:		db      "MAC"                   ; CP/M MAC marcoassembler file
 extcom:		db      "COM"                   ; executable
@@ -115,7 +130,7 @@ extrel:		db      "REL"                   ; relocatable
 		db      0,0
 secbuf:		ds	128
 filecmdtp:	db      0                       ;  xref 9663:0522
-filecmdstr:	dw      0                       ;  xref 9663:02FD, 052F, 053E
+filecmdstr:	dw      0                       ;  xref 9663:02FD, 052F, 053E *to which remote prg
 halpgfs: 	db      0                       ;  # of paragraphs in 20HAL xref 9663:0347, 075E
 recptr:		db      0                       ;  xref 9663:0363, 06F5 *record buffer
 BlockCnt:	dw      0                       ;  xref 9663:02C1, 036F, 0374, 059B
@@ -128,10 +143,12 @@ t10cmd1:	db      3,3,"PJ",0dh,0		; ETX,ETX,P,J,CR,0
 t10fillcmd:	db      "TTY FILL 3",0Dh,0		;  xref 9663:02B8
 msgblkcnt:	db      8," Blocks.",0Dh,0Ah,0		;  xref 9663:0317
 msgdisk:	db      "DISK",0Dh 			; unsure how used
+; COPy dev:file.ext [directory]<nnn>=dev:file.ext [directory]. File on the
+; left is the DEST; right is the SRC.
 msgcopdsk:	db      " COP DISK="            	;  xref 9663:02E8           	
 cmdbuff:	ds	24				;  xref 9663:0502, 0556
 
-; these are remote command strings. 'R' is the TOPS-20 'run' command so the two
+; These are remote command strings. 'R' is the TOPS-20 'run' command so the two
 ; programs are programs on the PDP-10. There is a discussion on the PDP-10
 ; mailing list relating to ITS that mentions remote file transfer programs
 ; that seem similar. If you look at the /cpm/cis archive on the WCCDROM,
@@ -211,11 +228,11 @@ fnferror: 					;  xref 9663:06C5
 		call    printcrlf		; (057D)
 		jmp     CmdLoop 		; (02B3)
 
-; we get here from the ^C test in the keyboard loop. It already printed '^' 
+; We get here from the ^C test in the keyboard loop. It already printed '^' 
 ; and al has 'C', so print it and exit
 exitctlc: 					;  xref 9663:0434
 		call    printchar		; (0584)
-; exit by way other than ^C
+; Exit by way other than ^C
 loc11: 						;  xref 9663:063D, 0656
 		mov     ax,0 			; ah=functn 00h al=mode
 		int     10h 			; Video display 
@@ -227,32 +244,34 @@ exithal: 					;  xref 9663:0286
 ; startup initialization continues here
 ; @2a2h
 startup2:					;  xref 9663:0774, 0793
-		mov     ax,43h 			; reset to 300,N81
+;PATCH
+;		mov     ax,43h 			; reset to 300,N81
+		mov	ax,0E3h			; 9600,N81
 		mov     dx,0 			; port= COM1
 		int     14h 			; RS-232
+
 ; WaitForIdle polls the COM port and waits for it to be ready. Once ready, 
-; print CMD1 followed by CMD2. The string ETX,ETX,"PJ",CR is interesting since
-; in TOPS-10/20, ^C interrupts the current program and returns to the 
-; TOPS-10/20 command prompt. The only command close to "PJ" is PJOB, which 
-; prints the current job ID, user name, user ID and terminal ID. If the next 
-; step is to send a TTY FILL 3 command, breaking into the TOPS-10/20 monitor 
-; would make sense.
+; print CMD1 followed by CMD2. The string ETX,ETX,"PJ",CR is a TOPS-10/20
+; command: ^C interrupts the current program and returns to the 
+; TOPS-10/20 command prompt. "PJ" is PJOB, which prints the current job ID, 
+; user name, user ID and terminal ID. 
 		call    WaitForIdle		; (03CF)
 		mov     bx,t10cmd1 		; (9663:01C5=3) 3,3,"PJ",0D,0
 		call    StringToComm 		; (0233)
 
-; This is the top of the command loop
+; This is the top of the command loop. Always reissue the TTY command.
 CmdLoop:					;  xref 9663:0292, 032B
 		SEG	CS
 		mov     sp,[progsz]		; (9663:0103=0) WORD
 		mov     bx,t10fillcmd 		; TOPS-10/20 TTY FILL
 		call    StringToComm		; (0233)
 
-; strings printed to remote system, so continue. Check for a filename on the 
-; command line. Maybe this is how it processes a command script file?
+; Strings printed to remote system, so continue with the setup. Check for
+; a filename on the command line. Maybe this is how it processes a command
+; script file to transfer more than one file?
 		mov     bx,0
 		mov     [BlockCnt],bx		; (9663:01C3=0)
-		mov	al,[5dh]
+		mov	al,[FNAME]		; 5d
 		cmp     al," " 			; is FCB blank?
 		jne     CmdInner 		; no, continue
 
@@ -290,7 +309,7 @@ loc17:
 		cmp     al,"."	
 		jne     loc17 
 
-; Copy command done (monitor prompt received) so send the file transfer command
+; Command request was acknowledged, so send the file transfer command
 ; based on the file type.
 ; @2fdh                 
 DiskCmd: 					;  xref 9663:02E6
@@ -312,7 +331,6 @@ DiskCmd: 					;  xref 9663:02E6
 		mov     sp,bx
 		jmp     CmdLoop			; (02B3) go to the beginning
 
-
 ; 	Called from:   9663:02CE
 ; Enters with ch=5 so this loop tests for ENQ (^E)
 ; @32eh
@@ -320,16 +338,16 @@ WaitForENQ:
 		call    rxloop			; (05DB)
 		cmp     al,ch			; ENQ?
 		jne     loc20
-		jmp     printcrlf		; (057D) returns to 02D1
+		jmp     printcrlf		; (057D) returns to 02D1 CmdInner
 loc20: 
 		mov     cl,al
 		call    comwrite		; (06A1)
 		jmp     WaitForENQ		; (032E) loop
 
-
 ;	Called from:   9663:0314
 ; This is the actual file transfer code. It sends "B" as a "ready" char and 
-; beeps, and sits in this B/beep loop until characters are received.
+; beeps, and sits in this B/beep loop until characters are received. It uses
+; the end of the file as the receive buffer.
 ; @340h
 BlockXfer:
 		mov     bx,realstart		;74Bh
@@ -340,13 +358,13 @@ BlockXfer:
 XferLoop:					;  xref 9663:039F, 03CC
 		push    cx 
 		push    bx 			; DTA
-		mov     dx,81h			; record size 129b
+		mov     dx,81h			; record size 129b?
 
 XferLoop1: 					; inner loop
 		call    comread 		; (0666)
 		jnz     GetBlock 		; char, so collect bytes
 		jmp     CheckBuf		; (06F5) sends NAK (^U) and 
-						; returns  to SendSynch
+						; returns to SendSynch
 
 ; Block size DX is set above -- 128 bytes plus terminator or maybe a block 
 ; number (max 255) followed by 128 bytes. BX is the disk transfer buffer 
@@ -395,7 +413,6 @@ loc25: 						;  xref 9663:0386
 		jz      BlockXfer		; restart next block
 		jmp     XferLoop		; (034D) loop in current block
 
-
 ; this sounds the bell, prints backspace and ^C. "ready for block" process?
 ; @3a2h
 SendSynch: 					;  xref 9663:036B, 06FC
@@ -431,7 +448,7 @@ WaitForIdle:
 loc28: 						;  xref 9663:03F6
 		mov     al,1
 		
-; looks like this is some sort of wait loop for 256*256
+; looks like this is some sort of wait loop for 256*2
 loc29:   					;  xref 9663:03D9, 03DD, 03E1
 		dec     ch
 		jnz     loc29 
@@ -470,7 +487,7 @@ GetCommandTop:					;  xref 9663:0439
 		call    printcrlf		; (057D)
 		
 ;         Called from:   9663:02D4
-; seems like the only way to get the * prompt is from hitting ^E
+; The only way to get the * prompt is by hitting ^E
 GetCommand:
 		mov     al,"*" 
 		call    printchar		; (0584)
@@ -479,16 +496,16 @@ CmdFetchChar:  					;  xref 9663:0424, 043E
 		call    rxloop 			; (05DB)
 		call    toupper 		; (061A)
 		cmp     al,0Dh 			; CR?
-		je      GotCmdLine 		; yes
+		je      GotCmdLine 		; yes, process command line
 		cmp     al,0Ah 			; LF?
-		je      loc33 			; yes
+		je      loc33 			; yes, print LF and loop back
 		cmp     al," " 			; space
-		je      loc33			; yes
+		je      loc33			; yes, print it and loop
 		jc      prtctrl 		; print other control chars
-		mov     [bx],al			; save it
+		mov     [bx],al			; save it to buffer
 		inc     bx 			; next buffer slot
 
-; process characters LF and print SPACE
+; print current character and loop
 loc33: 
 		call    printchar		; (0584)
 		jmp     CmdFetchChar		; (040A)
@@ -516,13 +533,17 @@ NotCtlC:
 
 ; CR received, so return command line to parent
 GotCmdLine:					;  xref 9663:0412
-		mov     [bx],al
+		mov     [bx],al			; save final CR
 		mov     bx,secbuf		; reset BX to top of buffer
-		jmp     printcrlf 		; (057D)
+		jmp     printcrlf 		; (057D) exit via here
 
 
 ;         Called from:   9663:02D7
-; Parse command line. Enters with BX= buffer set in GetCommand.
+; Parse command line. Enters with BX= buffer used in GetCommand.
+; Look for a drive letter and if one is specified, get the letter, 
+; determine the drive number for the FCB (0=default; 1=A) and then store it
+; in the FCB. The next 11 characters are a file name or possibly 
+; just "DISK", resulting in a command like "A:=DISK-"
 ; @449h
 ParseCmdLine:
 		push    bx
@@ -543,14 +564,10 @@ ParseCmdLine:
 		inc     dx
 		sub     al,"@" 			;ASCII adjust
 loc37: 						;  xref 9663:045A
-		mov     [bx],al
+		mov     [bx],al			; save it
 		inc     bx
-; the above looks for a drive letter and if one is specified, it gets the 
-; letter, determines the drive number for the FCB (0=default; 1=A) and then 
-; stores it in the FCB. The next 11 characters are a file name or possibly 
-; just "DISK", resulting in a command like "A:=DISK-"
-;
-; get the next 8 characters which is assumed to be a file name.
+
+; Get the next 8 characters which I assume is a file name.
 ; @466h
 		mov     ch,8 			; 8 character loop?
 loc38: 						;  xref 9663:0480
@@ -559,7 +576,7 @@ loc38: 						;  xref 9663:0480
 		inc     dx
 		mov     [CurParseChar],al	; (9663:0131=0)
 		cmp     al,"." 			; file extension so short FNM
-		je      loc40
+		je      loc40			; pad to 8-chars if needed
 		cmp     al,"=" 			; check for second command
 		je      loc40
 		cmp     al,"!" 
@@ -569,7 +586,7 @@ loc38: 						;  xref 9663:0480
 		dec     ch
 		jnz     loc38 			; not done yet, so loop
 
-; done with first 8 characters, so check for a file extension or a secondary 
+; Done with first 8 characters, so check for a file extension or a secondary 
 ; command.
 ; @482h
 loc39: 						;  xref 9663:0493
@@ -585,11 +602,11 @@ loc39: 						;  xref 9663:0493
 		jae     loc39			; keep parsing
 		jmp     loc41			; (049B)
 
-; got some sort of delimiter so check things a bit more
+; Pad filename to 8 chars and continue
 loc40: 						;  xref 9663:0471, 0475, 0479
 		call    padfnm 			; (021E)
-; '.' and '=' get here. If there's a '.' we assume an extension exists and 
-; then copy it to the buffer. 
+
+; If there's a '.' we assume an extension exists and then copy it to the buffer. 
 loc41: 						;  xref 9663:048B, 048F, 0495
 		mov     ch,3
 		mov     al,[CurParseChar]	; (9663:0131=0)
@@ -602,7 +619,7 @@ loc42: 						;  xref 9663:04A2, 04B4
 		lodb 				; String [si] to al
 		cmp     al,"=" 			; then skip rest of extension
 		je      loc43 			; extension is specified and we have '='
-						;   so skip copying a default.
+						;   so skip copying rest of extension.
 		inc     dx
 		mov     [bx],al
 		inc     bx
@@ -610,16 +627,20 @@ loc42: 						;  xref 9663:04A2, 04B4
 		jnz     loc42
 		jmp     loc44 			; (04BC)
 loc43:						;  xref 9663:04AC
-		call    padfnm 			; (021E)
+		call    padfnm 			; (021E) pad the extension too
 
-; ds:1 is the exit interrupt number in the PSP (CD 20). In the caller, CH is 
-; used as a loop variable that is used to check file extensions against MAC, 
-; COM, REL (note the move absolute of 132h which is ds:132h).
+; In the caller, CH is used as a loop variable that is used to check file 
+; extensions against MAC, COM, REL (note the move absolute of 132h which is
+; ds:132h). BX is a pointer in the temporary FCB. CH should also be 0 on entry.
+; There is a bug in ASM that requires a short forward reference in order to get
+; the assembler to emit the right op codes for the 16-bit operand. DS:1 is the
+; exit interrupt number in the PSP (CD 20) so this should not be modified. I 
+; think it's an artifact of Sourcer not knowing about the ASM bug. 
 ; @4bch
 loc44:						;  xref 9663:04B6
 		mov     cl,0
 		mov     [bx],ch
-		mov     [bx+ONE],ch		; (9663:0001=0)
+		mov     [bx+ONE],ch		; (9663:0001=0) DS:1??
 		mov     [fcbRandomRecNo],cx	; (9663:012C=0)
 		mov     [fcbRandomRecNo+2],cx	; (9663:012E=0)
 		pop     cx
@@ -627,10 +648,8 @@ loc44:						;  xref 9663:04B6
 		pop     bx
 		ret
 
-;External Entry into Subroutine
-;
 ;         Called from:   9663:02DA
-; on entry, BX points to the command buffer. Returns with dx pointing to a
+; On entry, BX points to the command buffer. Returns with dx pointing to a
 ; "second command" buffer. {BX popped at end of ParseCmdLine.}
 ; @4d0h
 LookForEq:
@@ -643,8 +662,8 @@ loc46:
 		cmp     al,"=" 
 		jne     LookForEq 		; no, loop back
 
-; so far, the command line is "[d:]file.ext=" or "d:=" so get up to 
-; 24-bytes for whatever is after. '=' with nothing is ERR                               
+; So far, the command line is "[d:]file.ext=" or "d:=" so get up to 
+; 24-bytes for whatever is after. '=' with nothing being an ERR                               
 		mov     dx,cmdbuff		; 1F2h 24-char buffer?
 loc47: 						;xref 9663:04F3
 		mov     al,[bx]
@@ -653,7 +672,7 @@ loc47: 						;xref 9663:04F3
 		jne     loc48 
 		jmp     cmderror 		; (0289)
 
-; parse the second part of the command; "-" is a flag for the file
+; Parse the second part of the command; "-" is a flag for the file
 ; type A, B or R. Command is copied from the input buffer in BX to DX.
 loc48:  					;  xref 9663:04E6
 		cmp     al,"-" 
@@ -663,7 +682,7 @@ loc48:  					;  xref 9663:04E6
 		inc     dx
 		jmp     loc47 			; (04E1)
 
-; second terminator, so replace '-' with a <CR><0>
+; Dash without a command, so add a <CR><0>
 loc49:						;  xref 9663:04ED
 		mov     al,0Dh
 		mov     di,dx
@@ -695,8 +714,8 @@ loc51: 						;  xref 9663:050F
 		ret
 
 ;         Called from:   9663:02DD
-; looks like this figures out what kind of file is being sent? Called with
-; BX= command input buffer pointing at next char after parsing second part
+; Looks like this figures out what kind of file is being transferred. Called
+; with BX= command input buffer pointing at next char after parsing second part
 ; of command. DI points to second command.
 ; @519h
 WhatFileType:
@@ -705,13 +724,13 @@ WhatFileType:
 		jne     loc52			; no, process command
 		jmp     cmderror 		; (0289) yes, exit
 
-; setup registers for the specific request type. BX contains
+; Setup registers for the specific request type. BX contains
 ; return location which is pushed on the stack and then popped
-; into IP on the RETN after file type parameters are set.
+; into IP on the RET after file type parameters are set.
 loc52:						;  xref 9663:051D
 		mov     [filecmdtp],al		; (9663:01BE=0)
 		mov     bx,loc55a       	;552h "error" address
-		push    bx
+		push    bx			; create imbalanced stack
 
 ; "A" = MAC file
 		mov     bx,msgrcpmt		;20Ah CPMTTY
@@ -737,21 +756,22 @@ loc54: 						;  xref 9663:0544
 		jne     loc55			; not A, B, or R
 		ret 				; do a return to loc55a
 
+; Stack is still imbalanced here I think...
 loc55: 						;  xref 9663:054C
-		jmp     cmderror		; (0289)
+		jmp     cmderror		; (0289) 
 
-; We get here by pushing the return address on the stack (the "push bx" in 
-; loc52) and the retn in loc54 which pops it into IP. Execution comes here
+; We get here by the imbalanced stack (the "push bx" in loc52) and the ret in
+; loc53 and loc54 which pops it into IP. 
 ; with:
 ;       al= transfer command A, B, or R
-;       bx= TOPS-20 transfer command based on file type
+;       bx= TOPS-10 transfer command based on file type
 ;       dx= offset to related extension
 ; @552h
 loc55a:
 		cmp     al,"A"
 		jne     loc57 			; COM or REL
 
-; get here if it's a type "A" (MAC) file (so, non-executable). Reset BX to 
+; Get here if it's a type "A" (MAC) file (so, non-executable). Reset BX to 
 ; beginning of the second-command buffer used in loc47.
 		mov     bx,cmdbuff 	; (9663:01F2=0)
 ; find the end of the buffer and terminate it with /N<0>
@@ -1127,7 +1147,7 @@ realstart:
 		rcl     ah			; Rotate thru carry ECA5
 		mov     [halpgfs],ah		; size of HAL in paragraphs??
 ; print signon 
-		mov     ax,2
+		mov     ax,2			; should be 80x25 B&W
 		int     10h 			; Video display   ah=functn 00h
 						;  set display mode in al
 		mov     bx,signon
